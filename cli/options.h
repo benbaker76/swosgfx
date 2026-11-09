@@ -76,6 +76,7 @@ struct Options {
     bool fontExtendMode = false;
     std::optional<std::string> glyphsPath;
     bool noMissingBoxes = false;
+    int32_t fontBase = 1334;                 // -dos -font-extend: the records' first sprite number
 };
 
 // Parse argv (without the program name). On failure returns false and sets

@@ -80,6 +80,10 @@ int RunFontExtend(const Options &o, const char *argv0)
             glyphs = shipped;
     }
     char err[256] = "";
+    if (o.platform == Platform::Dos)
+        return Done(Sg_FontExtendDos(glyphs.c_str(), o.files.empty() ? nullptr : o.files[0].c_str(), o.fontBase,
+                                     PrintLine, nullptr, err),
+                    err);
     const char *out = o.files.size() > 1 ? o.files[1].c_str() : nullptr;
     return Done(Sg_FontExtendRun(o.files[0].c_str(), out, glyphs.c_str(), !o.noMissingBoxes, 1,
                                  PrintLine, nullptr, err),

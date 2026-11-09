@@ -11,6 +11,7 @@
  */
 #include "font_extend.h"
 #include "dos2amiga.h"
+#include "dos_sprite_io.h"
 #include "sg_dir.h"
 #include "sg_util.h"
 
@@ -413,27 +414,21 @@ void Sg_FontLayoutFree(SgFontLayout *layout)
     memset(layout, 0, sizeof *layout);
 }
 
-int32_t Sg_FontExtendEx(SgImage *charset, const char *glyphsTxtPath, int32_t fillMissing,
-                        SgFontLayout *layout, char *err)
+/* The glyphs file read and shaped: seq[nseq] the characters in their order (the
+ * fixed order, then the file's others; each one has both fonts), small[] and
+ * big[] their finished art. *small / *big malloc'd (free both, also on failure). */
+static int32_t BuildArts(const char *glyphsTxtPath, uint32_t *seq, int32_t *nseqOut, Art **smallOut,
+                         Art **bigOut, char *err)
 {
     Glyphs g;
-    uint32_t seq[MAX_BLOCKS];
     int32_t nseq = 0, rc = -1;
     Art *small = NULL, *big = NULL;
-    uint8_t occ[32][16];
-    int32_t smallRows[32], bigRows[32], nSmall, nBig;
 
     memset(&g, 0, sizeof g);
-    if (layout)
-        memset(layout, 0, sizeof *layout);
+    *smallOut = *bigOut = NULL;
+    *nseqOut = 0;
     if (ReadGlyphs(glyphsTxtPath, &g, err) != 0)
         goto out;
-
-    CoreCells(occ);
-    nSmall = FreeRows(occ, 0, SPLIT_ROW, smallRows);
-    nBig = FreeRows(occ, SPLIT_ROW, 32, bigRows);
-
-    /* the fixed order first, then the file's other glyphs; a glyph needs both fonts */
     for (int32_t i = 0; i < ORDER_COUNT; i++)
         if (FindBlock(&g, kOrder[i], FONT_SMALL) && FindBlock(&g, kOrder[i], FONT_BIG))
             seq[nseq++] = kOrder[i];
@@ -447,12 +442,9 @@ int32_t Sg_FontExtendEx(SgImage *charset, const char *glyphsTxtPath, int32_t fil
         if (!skip && FindBlock(&g, ch, FONT_SMALL) && FindBlock(&g, ch, FONT_BIG))
             seq[nseq++] = ch;
     }
-
     small = calloc((size_t)(nseq ? nseq : 1), sizeof *small);
     big = calloc((size_t)(nseq ? nseq : 1), sizeof *big);
-    if (layout)
-        layout->entries = calloc((size_t)(nseq ? nseq * 2 : 1), sizeof *layout->entries);
-    if (!small || !big || (layout && !layout->entries)) {
+    if (!small || !big) {
         snprintf(err, 256, "out of memory");
         goto out;
     }
@@ -460,9 +452,41 @@ int32_t Sg_FontExtendEx(SgImage *charset, const char *glyphsTxtPath, int32_t fil
         Finalize(FindBlock(&g, seq[i], FONT_SMALL), FONT_SMALL, &small[i]);
         Finalize(FindBlock(&g, seq[i], FONT_BIG), FONT_BIG, &big[i]);
     }
-    if (layout)
-        layout->glyphs = nseq;
+    *nseqOut = nseq;
+    rc = 0;
+out:
+    free(g.blocks);
+    *smallOut = small;
+    *bigOut = big;
+    return rc;
+}
 
+int32_t Sg_FontExtendEx(SgImage *charset, const char *glyphsTxtPath, int32_t fillMissing,
+                        SgFontLayout *layout, char *err)
+{
+    uint32_t seq[MAX_BLOCKS];
+    int32_t nseq = 0, rc = -1;
+    Art *small = NULL, *big = NULL;
+    uint8_t occ[32][16];
+    int32_t smallRows[32], bigRows[32], nSmall, nBig;
+
+    if (layout)
+        memset(layout, 0, sizeof *layout);
+    if (BuildArts(glyphsTxtPath, seq, &nseq, &small, &big, err) != 0)
+        goto out;
+
+    CoreCells(occ);
+    nSmall = FreeRows(occ, 0, SPLIT_ROW, smallRows);
+    nBig = FreeRows(occ, SPLIT_ROW, 32, bigRows);
+
+    if (layout) {
+        layout->entries = calloc((size_t)(nseq ? nseq * 2 : 1), sizeof *layout->entries);
+        if (!layout->entries) {
+            snprintf(err, 256, "out of memory");
+            goto out;
+        }
+        layout->glyphs = nseq;
+    }
     if (Lay(charset, small, seq, nseq, smallRows, nSmall, 0, layout, err) != 0 ||
         Lay(charset, big, seq, nseq, bigRows, nBig, 1, layout, err) != 0)
         goto out;
@@ -475,7 +499,6 @@ out:
         Sg_FontLayoutFree(layout);
     free(small);
     free(big);
-    free(g.blocks);
     return rc;
 }
 
@@ -702,5 +725,165 @@ out:
     free(text);
     Sg_FontLayoutFree(&layout);
     SgImage_Free(&sheet);
+    return rc;
+}
+
+/* ---- -dos -font-extend ------------------------------------------------------- */
+
+/* The PC game's font sprites as its CHARSET.DAT has them (sprites 0-56 the small
+ * font, 6 lines; 57-112 the big one, 8): width the glyph's (its shadow column
+ * included), centre 0,0, unk4 wquads * 2 with bit 7 set in the small font,
+ * nlines_div4 height / 4, ordinal the sprite's number. */
+static int32_t DosRecord(const Art *a, int32_t big, int32_t ordinal, SgDosSprite *s, uint8_t **owned, char *err)
+{
+    const int32_t h = big ? 8 : 6;      /* (the font's height, whatever rows the glyph drew) */
+    uint8_t px[8 * MAX_COLS];
+    uint32_t size;
+    int16_t wq;
+
+    memset(px, 0, sizeof px);
+    for (int32_t r = 0; r < a->h && r < h; r++)
+        for (int32_t c = 0; c < a->w; c++)
+            px[r * a->w + c] = a->px[r][c];
+    if (Sg_DosSpriteEncode(px, a->w, h, owned, &size, &wq, err) != 0)
+        return -1;
+    memset(s, 0, sizeof *s);
+    s->data = *owned;
+    s->size = size;
+    s->width = (int16_t)a->w;
+    s->height = (int16_t)h;
+    s->wquads = wq;
+    s->unk4 = (uint8_t)((big ? 0 : 0x80) | (wq * 2));
+    s->heightDiv4 = (uint8_t)(h / 4);
+    s->ordinal = (int16_t)ordinal;
+    return 0;
+}
+
+/* A look at the result: the small font on the first row, the big one under it,
+ * each glyph in a 10x10 cell, on the menus' blue. */
+static int32_t DosPreview(const Art *small, const Art *big, int32_t n, const char *path, char *err)
+{
+    enum { CELL = 10, PER_ROW = 32 };
+    const int32_t rows = (n + PER_ROW - 1) / PER_ROW, w = PER_ROW * CELL + 4, h = rows * 2 * CELL + 4;
+    uint32_t pal[16] = { 0x000060, 0, 0xFFFFFF, 0, 0, 0, 0, 0, 0x202020 };
+    SgImage img;
+    int32_t rc;
+
+    if (SgImage_Init(&img, w, h > 4 ? h : 8) != 0) {
+        snprintf(err, 256, "out of memory");
+        return -1;
+    }
+    SgImage_SetPaletteArgb(&img, pal, 16);
+    for (int32_t i = 0; i < n; i++) {
+        const int32_t x0 = 2 + (i % PER_ROW) * CELL, y0 = 2 + (i / PER_ROW) * 2 * CELL;
+        for (int32_t f = 0; f < 2; f++) {
+            const Art *a = f ? &big[i] : &small[i];
+            for (int32_t r = 0; r < a->h; r++)
+                for (int32_t c = 0; c < a->w && c < CELL; c++)
+                    if (a->px[r][c])
+                        img.px[(y0 + f * CELL + r) * img.w + x0 + c] = a->px[r][c];
+        }
+    }
+    rc = SgImage_WriteBmp(&img, path, err);
+    SgImage_Free(&img);
+    return rc;
+}
+
+int32_t Sg_FontExtendDos(const char *glyphsPath, const char *outDir, int32_t base, SgLogFn log, void *user,
+                         char *err)
+{
+    uint32_t seq[MAX_BLOCKS];
+    int32_t nseq = 0, rc = -1;
+    Art *small = NULL, *big = NULL;
+    SgDosSprite *rec = NULL;
+    const SgDosSprite **ptr = NULL;
+    uint8_t **owned = NULL;
+    SgBuf dat = { 0 };
+    Out o;
+    char path[1100], line[1400], u[5];
+
+    memset(&o, 0, sizeof o);
+    if (!glyphsPath || !glyphsPath[0])
+        glyphsPath = "glyphs.txt";
+    if (!outDir || !outDir[0])
+        outDir = ".";
+    if (base < 0 || base > 32767 - 2 * MAX_BLOCKS) {
+        snprintf(err, 256, "-font-base=%d: a sprite number is 0..32767", (int)base);
+        return -1;
+    }
+    if (!Sg_IsFile(glyphsPath)) {
+        snprintf(err, 256, "glyphs file not found: %.200s", glyphsPath);
+        return -1;
+    }
+    if (BuildArts(glyphsPath, seq, &nseq, &small, &big, err) != 0)
+        goto out;
+    rec = calloc((size_t)(nseq ? 2 * nseq : 1), sizeof *rec);
+    ptr = calloc((size_t)(nseq ? 2 * nseq : 1), sizeof *ptr);
+    owned = calloc((size_t)(nseq ? 2 * nseq : 1), sizeof *owned);
+    if (!rec || !ptr || !owned) {
+        snprintf(err, 256, "out of memory");
+        goto out;
+    }
+    /* the small font's glyphs, then the big font's, in one order */
+    for (int32_t k = 0; k < 2 * nseq; k++) {
+        const int32_t big_ = k >= nseq, i = big_ ? k - nseq : k;
+        if (DosRecord(big_ ? &big[i] : &small[i], big_, base + k, &rec[k], &owned[k], err) != 0)
+            goto out;
+        ptr[k] = &rec[k];
+    }
+    if (Sg_MakeDirs(outDir) != 0) {
+        snprintf(err, 256, "cannot create %.200s", outDir);
+        goto out;
+    }
+    if (Sg_DosDatBuild(ptr, 2 * nseq, 0, &dat, err) != 0)
+        goto out;
+    Sg_PathJoin(path, sizeof path, outDir, "FONTX.DAT");
+    if (Sg_WriteFile(path, dat.data, dat.size, err) != 0)
+        goto out;
+
+    Put(&o, "# FONTX.DAT: %d records in the PC game's sprite format (as CHARSET.DAT's), from %s.\n",
+        (int)(2 * nseq), Sg_PathFileName(glyphsPath));
+    Put(&o, "# Records 0..%d are the small font (6 lines), %d..%d the big font (8 lines), in the same\n",
+        (int)nseq - 1, (int)nseq, (int)(2 * nseq) - 1);
+    Put(&o, "# order. Colours as the stock font's: 2 ink, 8 shadow, 0 transparent.\n");
+    Put(&o, "#\n");
+    Put(&o, "# The PC game draws a character c as sprite spriteIndexOffset + conversionTable[c - 0x20]:\n");
+    Put(&o, "# smallCharsTable offset 0, bigCharsTable 57, so sprites 0-56 and 57-113 -- both full, and\n");
+    Put(&o, "# CHARSET.DAT's 227 sprites are followed by SCORE.DAT's at 227. These records are numbered\n");
+    Put(&o, "# (their ordinal) from %d: an exe that loads them as sprites %d.. and maps a character to them\n",
+        (int)base, (int)base);
+    Put(&o, "# needs a wider sprite table and a conversion past a byte -- the exe's own change.\n");
+    Put(&o, "#\n");
+    Put(&o, "# code  char  conv  small: record sprite w   big: record sprite w\n");
+    for (int32_t i = 0; i < nseq; i++)
+        Put(&o, "U+%04X  %-4s  0x%02X         %4d  %5d  %d          %4d  %5d  %d\n", (unsigned)seq[i],
+            Utf8(seq[i], u), (unsigned)CpOf(seq[i]), (int)i, (int)(base + i), (int)small[i].w, (int)(nseq + i),
+            (int)(base + nseq + i), (int)big[i].w);
+    if (o.oom) {
+        snprintf(err, 256, "out of memory");
+        goto out;
+    }
+    Sg_PathJoin(path, sizeof path, outDir, "FONTX.txt");
+    if (Sg_WriteFile(path, o.s, o.len, err) != 0)
+        goto out;
+    Sg_PathJoin(path, sizeof path, outDir, "FONTX.bmp");
+    if (DosPreview(small, big, nseq, path, err) != 0)
+        goto out;
+    if (log) {
+        snprintf(line, sizeof line, "Font (PC): %d glyphs x2 fonts = %d sprites -> FONTX.DAT, FONTX.txt, FONTX.bmp "
+                 "in %.1000s", (int)nseq, (int)(2 * nseq), outDir);
+        log(user, line);
+    }
+    rc = 0;
+out:
+    for (int32_t k = 0; owned && k < 2 * nseq; k++)
+        free(owned[k]);
+    free(owned);
+    free(ptr);
+    free(rec);
+    free(o.s);
+    Sg_BufFree(&dat);
+    free(small);
+    free(big);
     return rc;
 }

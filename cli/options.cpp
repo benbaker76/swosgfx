@@ -245,6 +245,13 @@ bool ParseOptions(const std::vector<std::string> &args, Options &o, std::string 
             o.glyphsPath = arg.substr(8);
         } else if (lower == "-no-boxes") {
             o.noMissingBoxes = true;
+        } else if (StartsWith(lower, "-font-base=", &v)) {
+            int32_t b = 0;
+            if (!ParseInt(v, b) || b < 0 || b > 32767) {
+                error = "Invalid -font-base '" + v + "'. Expected a sprite number, 0..32767.";
+                return false;
+            }
+            o.fontBase = b;
         } else if (StartsWith(lower, "-pal-color=", &v)) {
             if (v == "amiga12")
                 o.paletteColorFormat = PalColor::Amiga12;
@@ -299,6 +306,13 @@ bool ParseOptions(const std::vector<std::string> &args, Options &o, std::string 
     if (o.paletteMode)
         return true;
 
+    if (o.fontExtendMode && o.platform == Platform::Dos) {
+        if (o.files.size() > 1) {
+            error = "-dos -font-extend expects: [outDir] (default: the current folder).";
+            return false;
+        }
+        return true;
+    }
     if (o.fontExtendMode) {
         if (o.files.empty() || o.files.size() > 2) {
             error = "-font-extend expects: in.bmp [out.bmp] (out defaults to in, i.e. in-place).";
@@ -505,6 +519,13 @@ void PrintUsage()
         "    fills empty cells with the 'missing glyph' box (rows 0-27; -no-boxes\n"
         "    skips this). If out.bmp is omitted the input is overwritten. Also\n"
         "    writes integration.txt. (assets/glyphs.txt is the default glyph set.)\n"
+        "  swosgfx -dos -font-extend [-glyphs=glyphs.txt] [-font-base=N] [outDir]\n"
+        "    The same glyphs for the PC game, whose fonts are sprites (CHARSET.DAT\n"
+        "    0-56 small, 57-113 big, both full): writes outDir/FONTX.DAT (the glyphs\n"
+        "    as records in the PC sprite format, small font then big, numbered\n"
+        "    from N, default 1334 -- after the game's last sprite), FONTX.txt\n"
+        "    (each character's record, sprite number and conversion code) and\n"
+        "    FONTX.bmp (a preview). Loading them is the exe's change.\n"
         "\n"
         "Common options:\n"
         "  -amiga                    Amiga mode (default)\n"

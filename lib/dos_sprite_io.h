@@ -35,4 +35,16 @@ int32_t Sg_DosSpritesExport(const char *dosDir, const char *outDir, uint8_t bgIn
  * read was good. 0 on success. */
 int32_t Sg_DosSpritesImport(const char *dosDir, const char *spritesDir, char *err);
 
+/* One sprite's pixels (width x height, top row first, 0..15, 0 transparent;
+ * only the low four bits are kept) in the game's chained format: *data is
+ * malloc'd, *size bytes (height * wquads * 8), *wquads the 16-pixel units a
+ * line. 0 on success. */
+int32_t Sg_DosSpriteEncode(const uint8_t *px, int32_t width, int32_t height, uint8_t **data,
+                           uint32_t *size, int16_t *wquads, char *err);
+
+/* A container (*.DAT) of `count` records, in order: each its 24-byte header
+ * (spr_data = its offset + dataOfs + 24; size, dat_file, changed and unk1
+ * zeroed) and its data. out->data is malloc'd (Sg_BufFree). 0 on success. */
+int32_t Sg_DosDatBuild(const SgDosSprite *const *spr, int32_t count, uint32_t dataOfs, SgBuf *out, char *err);
+
 #endif

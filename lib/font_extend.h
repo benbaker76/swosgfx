@@ -65,4 +65,16 @@ int32_t Sg_FontIntegrationText(const SgFontLayout *layout, char **text, uint32_t
 int32_t Sg_FontExtendRun(const char *inBmp, const char *outBmp, const char *glyphsPath,
                          int32_t fillMissing, int32_t emitIntegration, SgLogFn log, void *user, char *err);
 
+/* SwosGfx -dos -font-extend [-glyphs=G] [-font-base=N] [outDir]: the same glyphs
+ * for the PC game, which keeps its fonts as sprites (CHARSET.DAT 0-56 small,
+ * 57-113 big, both full). Writes into outDir (NULL: "."):
+ *   FONTX.DAT  the glyphs as records in the PC game's sprite format, the small
+ *              font's then the big font's, their ordinals numbered from `base`
+ *   FONTX.txt  which record and sprite each character is, its conversion code
+ *   FONTX.bmp  a preview: the small font above, the big below
+ * Loading them and mapping characters to them is the exe's change (FONTX.txt
+ * says how the PC game finds a character's sprite). 0 on success. */
+int32_t Sg_FontExtendDos(const char *glyphsPath, const char *outDir, int32_t base, SgLogFn log, void *user,
+                         char *err);
+
 #endif

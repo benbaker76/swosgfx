@@ -325,6 +325,32 @@ swosgfx -font-extend [-glyphs=glyphs.txt] charset.bmp [out.bmp]
   `glyphs.txt` — apply it to the game side if you change `glyphs.txt`, so the extraction
   positions stay in sync.
 
+#### For the PC game (`-dos -font-extend`)
+
+The same glyphs for the PC (DOS) game, which keeps its fonts as sprites rather than a sheet:
+
+```bash
+swosgfx -dos -font-extend [-glyphs=glyphs.txt] [-font-base=N] [outDir]
+```
+
+It writes into `outDir` (default: the current folder):
+
+* **`FONTX.DAT`**: one record per glyph per font, in the PC game's own sprite format (the
+  24-byte header and chained 4bpp pixels of `CHARSET.DAT`). The small font comes first, then
+  the big one, in the same order. Each header follows the stock font's: 6 lines small and 8 big,
+  centre 0,0, `unk4` = wquads × 2 (bit 7 set in the small font), and the ordinal numbered from
+  `N` (default **1334**, the game's sprite count).
+* **`FONTX.txt`**: for each character, its code, its `conversionTable` code, and its record,
+  sprite number and width in both fonts.
+* **`FONTX.bmp`**: a preview, with the small font above the big one.
+
+The PC game draws character `c` as sprite `spriteIndexOffset + conversionTable[c - 0x20]`.
+The small font is sprites 0–56 and the big font 57–113, and both are full; `SCORE.DAT`'s
+sprites follow `CHARSET.DAT`'s at 227. Using these glyphs is therefore the exe's change: load
+the records as further sprites and map the characters to them past a byte. The colours are
+the stock font's, so the glyphs look the same as the game's own letters: 2 ink, 8 shadow,
+0 transparent.
+
 ---
 
 ## Directories

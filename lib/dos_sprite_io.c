@@ -164,6 +164,46 @@ static void UnchainSprite(uint8_t *data, int32_t nLines, int32_t wQuads)
     }
 }
 
+/* new_width_aligned = (width + 15) & ~15; size = aligned * height / 2: a zeroed
+ * buffer filled two pixels a byte, high nibble first (the odd pixel past the
+ * width transparent), then chained -- as SwosGfx's InsertSpriteFromBmp. */
+int32_t Sg_DosSpriteEncode(const uint8_t *px, int32_t width, int32_t height, uint8_t **data,
+                           uint32_t *size, int16_t *wquads, char *err)
+{
+    int32_t aligned = (width + 15) & ~15, bytesPerLine;
+    uint32_t n;
+    uint8_t *d;
+
+    *data = NULL;
+    *size = 0;
+    if (width <= 0 || height <= 0 || height > 32767 || aligned / 2 > LINE_BUFFER_SIZE) {
+        snprintf(err, 256, "a %dx%d sprite cannot be encoded (at most %d wide)", (int)width, (int)height,
+                 LINE_BUFFER_SIZE * 2);
+        return -1;
+    }
+    n = (uint32_t)aligned * (uint32_t)height / 2;
+    d = calloc(n, 1);
+    if (!d) {
+        snprintf(err, 256, "out of memory encoding a sprite");
+        return -1;
+    }
+    *wquads = (int16_t)(aligned / 16);
+    bytesPerLine = *wquads * 8;
+    for (int32_t y = 0; y < height; y++) {
+        const uint8_t *src = px + (size_t)y * width;
+        uint8_t *dst = d + y * bytesPerLine;
+        for (int32_t x = 0; x < width; x += 2) {
+            uint8_t c1 = (uint8_t)(src[x] & 0x0F);
+            uint8_t c2 = (uint8_t)(x + 1 < width ? src[x + 1] & 0x0F : 0);
+            dst[x >> 1] = (uint8_t)((c1 << 4) | c2);
+        }
+    }
+    UnchainSprite(d, height, *wquads);
+    *data = d;
+    *size = n;
+    return 0;
+}
+
 /* ---- import ------------------------------------------------------------ */
 
 /* A sprite as the import edits it: the header fields, and the pixels -- the
@@ -283,7 +323,8 @@ static int32_t InsertSpriteFromBmp(Editor *e, int32_t index, const char *path, c
 {
     EditSprite *spr = &e->spr[index];
     uint8_t *pixels, *data;
-    int32_t width, height, newWidthAligned, bytesPerLine;
+    int32_t width, height;
+    int16_t wquads;
     uint32_t newSize;
 
     if (ReadSpriteBmp(path, &pixels, &width, &height, err) != 0)
@@ -292,43 +333,19 @@ static int32_t InsertSpriteFromBmp(Editor *e, int32_t index, const char *path, c
         free(pixels);
         return 0;
     }
-
-    /* new_width_aligned = (biWidth + 15) & ~15; new_size = aligned * biHeight / 2.
-     * Whether or not the geometry changed, SwosGfx ends with a zeroed buffer
-     * of new_size bytes refilled from the BMP, so build it new either way. */
-    newWidthAligned = (width + 15) & ~15;
-    newSize = (uint32_t)newWidthAligned * (uint32_t)height / 2;
-    data = calloc(newSize ? newSize : 1, 1);
-    if (!data) {
+    /* 16 (transparent) -> 0, any other index keeps its low four bits. */
+    for (int32_t i = 0; i < width * height; i++)
+        pixels[i] = (uint8_t)(pixels[i] == 16 ? 0 : (pixels[i] & 0x0F));
+    if (Sg_DosSpriteEncode(pixels, width, height, &data, &newSize, &wquads, err) != 0) {
         free(pixels);
-        snprintf(err, 256, "out of memory for sprite %d", (int)index);
         return -1;
-    }
-
-    spr->hdr.wquads     = (int16_t)(newWidthAligned / 16);
-    spr->hdr.width      = (int16_t)width;
-    spr->hdr.height     = (int16_t)height;
-    spr->hdr.heightDiv4 = (uint8_t)(height / 4);
-    bytesPerLine = spr->hdr.wquads * 8;
-
-    /* Two pixels a byte, high nibble first; 16 (transparent) -> 0, any other
-     * index keeps its low four bits; the odd pixel past the width is 16. */
-    for (int32_t y = 0; y < height; y++) {
-        const uint8_t *src = pixels + (size_t)y * width;
-        uint8_t *dst = data + y * bytesPerLine;
-        for (int32_t x = 0; x < width; x += 2) {
-            uint8_t c1 = src[x];
-            uint8_t c2 = (x + 1 < width) ? src[x + 1] : 16;
-            c1 = (uint8_t)(c1 == 16 ? 0 : (c1 & 0x0F));
-            c2 = (uint8_t)(c2 == 16 ? 0 : (c2 & 0x0F));
-            dst[x >> 1] = (uint8_t)((c1 << 4) | c2);
-        }
     }
     free(pixels);
 
-    /* Every other sprite is still chained as loaded; chain this one too. */
-    UnchainSprite(data, height, spr->hdr.wquads);
-
+    spr->hdr.wquads     = wquads;
+    spr->hdr.width      = (int16_t)width;
+    spr->hdr.height     = (int16_t)height;
+    spr->hdr.heightDiv4 = (uint8_t)(height / 4);
     free(spr->owned);
     spr->owned = data;
     spr->hdr.data = data;
@@ -343,23 +360,22 @@ static void Put32(uint8_t *p, uint32_t v)
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
-/* BuildDatFile for a changed container: its records laid out anew, spr_data
- * = record offset + dataOfs + 24 and the run-time fields zeroed. */
-static int32_t BuildDatFile(const Editor *e, int32_t di, uint32_t dataOfs, SgBuf *out, char *err)
+/* A container: the records laid out one after the other, spr_data = record
+ * offset + dataOfs + 24, the run-time fields zeroed (SwosGfx's BuildDatFile). */
+int32_t Sg_DosDatBuild(const SgDosSprite *const *spr, int32_t count, uint32_t dataOfs, SgBuf *out, char *err)
 {
-    const SgDosDatSpec *spec = &Sg_DosDatSpecs[di];
     uint32_t total = 0, p = 0;
 
-    for (int32_t j = 0; j < spec->entries; j++)
-        total += RECORD_SIZE + e->spr[spec->start + j].hdr.size;
+    for (int32_t j = 0; j < count; j++)
+        total += RECORD_SIZE + spr[j]->size;
     out->data = malloc(total ? total : 1);
     out->size = total;
     if (!out->data) {
-        snprintf(err, 256, "out of memory building %s", spec->name);
+        snprintf(err, 256, "out of memory building a container");
         return -1;
     }
-    for (int32_t j = 0; j < spec->entries; j++) {
-        const SgDosSprite *s = &e->spr[spec->start + j].hdr;
+    for (int32_t j = 0; j < count; j++) {
+        const SgDosSprite *s = spr[j];
         uint8_t *h = out->data + p;
         Put32(h + 0, p + dataOfs + RECORD_SIZE);
         Put16(h + 4, 0);                 /* size */
@@ -377,6 +393,21 @@ static int32_t BuildDatFile(const Editor *e, int32_t di, uint32_t dataOfs, SgBuf
         if (s->size)
             memcpy(h + RECORD_SIZE, s->data, s->size);
         p += RECORD_SIZE + s->size;
+    }
+    return 0;
+}
+
+/* BuildDatFile for a changed container. */
+static int32_t BuildDatFile(const Editor *e, int32_t di, uint32_t dataOfs, SgBuf *out, char *err)
+{
+    const SgDosDatSpec *spec = &Sg_DosDatSpecs[di];
+    const SgDosSprite *spr[SG_DOS_NUM_SPRITES];
+
+    for (int32_t j = 0; j < spec->entries; j++)
+        spr[j] = &e->spr[spec->start + j].hdr;
+    if (Sg_DosDatBuild(spr, spec->entries, dataOfs, out, err) != 0) {
+        snprintf(err, 256, "out of memory building %s", spec->name);
+        return -1;
     }
     return 0;
 }
