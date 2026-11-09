@@ -1,6 +1,8 @@
 # Build swosgfx for Windows, macOS and Linux on every push and pull request,
-# run the tests, and keep the executables as artifacts. A tag v* also makes a
-# GitHub release with one archive per platform.
+# run the tests, and keep the executables as artifacts. A push to main also
+# replaces the rolling "latest" pre-release (one zip per platform, the same
+# names every time: .../releases/download/latest/swosgfx-<platform>.zip); a
+# tag v* makes a release of its own, its zips named with the version.
 name: build
 
 on:
@@ -60,11 +62,12 @@ jobs:
           path: dist/swosgfx
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency: release-${{ github.ref }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -73,13 +76,29 @@ jobs:
       - name: Archive
         run: |
           cd artifacts
+          suffix=""
+          case "$GITHUB_REF" in refs/tags/*) suffix="-${GITHUB_REF_NAME}" ;; esac
           for d in swosgfx-*; do
+            [ -d "$d" ] || continue
             chmod +x "$d/swosgfx" 2>/dev/null || true
-            (cd "$d" && zip -qr "../$d-${GITHUB_REF_NAME}.zip" .)
+            (cd "$d" && zip -qr "../$d$suffix.zip" .)
           done
           ls -la
 
-      - uses: softprops/action-gh-release@v2
+      - name: Latest (main)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short=$(echo "$GITHUB_SHA" | cut -c1-7)
+          gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create latest artifacts/*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --title "Latest build ($short)" \
+            --notes "swosgfx built from main at $GITHUB_SHA. Replaced by every push to main; a tagged version has a release of its own."
+
+      - name: Version (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.zip
           generate_release_notes: true

@@ -23,8 +23,17 @@ project's own drawings.
 ## Download
 
 Executables for Windows (x64), macOS (universal) and Linux (x64, arm64) are built by GitHub
-Actions on every push; tagged versions are on the [Releases](https://github.com/benbaker76/swosgfx/releases)
-page. Each archive holds `swosgfx`, this README and `assets/`.
+Actions on every push. The newest build of `main` is always the
+[latest](https://github.com/benbaker76/swosgfx/releases/tag/latest) pre-release, at fixed links:
+
+* [swosgfx-windows-x64.zip](https://github.com/benbaker76/swosgfx/releases/download/latest/swosgfx-windows-x64.zip)
+* [swosgfx-macos-universal.zip](https://github.com/benbaker76/swosgfx/releases/download/latest/swosgfx-macos-universal.zip)
+* [swosgfx-linux-x64.zip](https://github.com/benbaker76/swosgfx/releases/download/latest/swosgfx-linux-x64.zip)
+* [swosgfx-linux-arm64.zip](https://github.com/benbaker76/swosgfx/releases/download/latest/swosgfx-linux-arm64.zip)
+
+Tagged versions (`v*`) are releases of their own on the
+[Releases](https://github.com/benbaker76/swosgfx/releases) page. Each archive holds `swosgfx`,
+this README and `assets/`.
 
 ## Building
 
